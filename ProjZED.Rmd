@@ -1,0 +1,203 @@
+---
+title: "Projekt ZED"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+author: "Mateusz Borowiak 117279"
+output: 
+  html_document:
+    toc: true
+    number_sections: true
+---
+
+# Wstêp
+
+Na podstawie danych pochodz¹cych z trzech s¹siaduj¹cych elektrowni s³onecznych we W³oszech, nale¿a³o okreœliæ jakie czynniki najlepiej pozwalaj¹ przewidzieæ energiê (atrybut kwh) wytwarzan¹ przez panele fotowoltaiczne.  Na podstawie analizy zbioru danych, mo¿na stwierdziæ, ¿e dane by³y mierzone od 2 stycznia 2012r. do 31 grudnia 2013r. Pochodzi³y z 17 czujników, znajduj¹cych siê w ró¿nych miejscach (ró¿ne wspó³rzêdne geograficznie). Pomiary by³y gromadzone ka¿dego dnia od godz 2:00 do 20:00. Atrybutami, które najlepiej potrafi¹ przewidzieæ energiê wytwarzan¹ przez panele fotowoltaiczne s¹ te zwi¹zane z natê¿eniem promieniowania s³onecznego (irradiamento i  irr_pvgis_mod ).
+
+# Codebook
+Odszyfrowane zmienne:
+
+* kwh - wytwarzana energia
+* temperatura_ambiente - temperatura
+* irradiamento - natê¿enie promieniowania s³onecznego
+* pressure - ciœnienie atmosferyczne
+* windspeed - prêdkoœæ wiatru
+* humidity - wilgotnoœæ powietrza
+* dewpoint - temperatura punktu rosy
+* windbearing - kierunek wiatru
+* cloudcover - zachmurzenie         
+* altitude - wysokoœæ bezwglêdna           
+* azimuth - azymut
+* lat - szerokoœæ geograficzna
+* lon - d³ugoœæ geograficzna
+* id - identyfikator pomiaru
+* idsito - identyfikator czujnika
+* idmodel - identyfikator modelu czujnika
+* idbrand - identyfikator marki czujnika
+* ora - rok pomiaru
+* day - dzieñ pomiaru
+* ora - godzina pomiaru
+* data - data wraz z godzin¹ pomiaru
+
+# Wykorzystane biblioteki
+```{r library_list, warning=FALSE, message=FALSE}
+
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(tidyr)
+library(reshape2)
+library(corrr)
+library(ggcorrplot)
+library(gganimate)
+library(caret)
+library(hydroGOF)
+```
+
+# Powtarzalnoœæ wyników przy ka¿dym uruchomieniu raportu
+```{r seed}
+set.seed(0)
+```
+
+# Wczytanie danych z pliku
+```{r dataload, cache=TRUE}
+ds <- read.csv("elektrownie.csv")
+```
+
+# Rozmiar zbioru danych
+```{r ds_Dimension}
+dim(ds)
+```
+Zbiór danych zawiera `r nrow(ds)` obserwacji o `r ncol(ds)` atrybutach.
+
+# Podsumowanie podstawowych statystyk zbioru danych
+```{r structure}
+summary(ds)
+```
+
+# Brakuj¹ce wartoœci
+```{r na}
+sum(is.na(ds))
+```
+Brak jest wartoœci nieokreœlonych NA. Jednak¿e wystêpuj¹ zerowe wartoœci kwh, gdy takie nie powinny byæ, czyli gdy natê¿enie promieniowania s³onecznego jest wiêksze od 0. Dlatego gdy kwh=0, a atrybuty zwi¹zane z natê¿eniem promieniowania s³onecznego maj¹ wiêksz¹ wartoœæ ni¿ progowe 0.005 to za kwh podstawiamy œredni¹ miesiêczn¹ w tej godzinie w danym roku tego czujnika.      
+
+```{r kvh0, cache=TRUE}
+dsProperKwh<-ds %>%  
+  mutate(monthYear=format(strptime(data, "%m/%d/%Y %H:%M"),"%Y-%m"),hour=format(strptime(data, "%m/%d/%Y %H:%M"),"%H:%M")) %>%
+  group_by(idsito,monthYear,hour) %>%
+  mutate(kwh = ifelse(kwh==0.0 & irradiamento>0.005 & irr_pvgis_mod>0.005, mean(kwh), kwh))
+
+dsCleaned<-ds %>% mutate(kwh=dsProperKwh$kwh)
+```
+
+
+# Wykres przedstawiaj¹cy rozk³ad wartoœci atrybutów
+```{r density, cache=TRUE, fig.width=30, fig.height=35}
+dsCleaned %>%
+  keep(is.numeric) %>%
+  gather() %>%
+  ggplot(aes(x=value)) +
+  facet_wrap(~ key, scales = "free", ncol=6) +
+  geom_density(size=1.3)+
+  theme(strip.text.x = element_text(size = 30),axis.title=element_text(size=20,face="bold"),axis.text=element_text(size=20))
+```
+
+Analizuj¹c nazwy atrybutów mo¿na stwierdziæ, ¿e wystêpuje 11 par atrybutów o zbli¿onych nazwach:
+
+* temperatura_ambiente - tempi
+* irradiamento - irri
+* irr_pvgis_mod - irri_pvgis_mod
+* pressure - pressurei
+* windspeed - windspeedi
+* humidity - humidityi   
+* dewpoint - dewpointi
+* windbearing - windbearingi
+* cloudcover - cloudcoveri         
+* altitude - altitudei           
+* azimuth - azimuthi
+  
+Z rozk³adów wartoœci atrybutów widaæ, ¿e drugie kolumny w parach (koñcz¹ce siê na i) maj¹ o wiele bardziej skoncentrowane rozk³ady wartoœci od ich odpowiedników. Ponadto z zestawienia korelacji atrybutów wzglêdem wytwarzanej energii (kolumna kwh)
+
+```{r correlationKwh, warning=FALSE, cache=TRUE}
+dsCleaned %>% 
+  keep(is.numeric) %>%
+  correlate() %>% 
+  focus(kwh) %>%
+  arrange(desc(abs(kwh))) %>%
+  print(n = 49)
+```
+
+wynika, ¿e we wszystkich parach oprócz temperatura_ambiente - tempi i azimuth - azimuthi wartoœc bezwglêdnej korelacji wzglêdem kwh jest wiêksza dla pierwszej kolumny z pary. Dlatego usuniemy z naszego zbioru danych atrybuty: tempi, irri, irri_pvgis_mod, pressurei, windspeedi, humidityi, dewpointi, windbearingi, cloudcoveri, altitudei i azimuthi. 
+
+```{r removeColumns, cache=TRUE}
+ds40var <- select(dsCleaned, -(tempi:cloudcoveri), -(altitudei:azimuthi), -irri_pvgis_mod)
+dim(ds40var)
+```
+
+Otrzymujemy zbiór `r ncol(ds40var)` atrybutowy.
+
+# Macierz korelacji
+```{r correlation, cache=TRUE, fig.width=10, fig.height=10}
+corList<-ds40var %>%
+  keep(is.numeric) %>%
+  cor() %>%
+  round(2) %>%
+  melt
+
+corr<-ds40var %>%
+  keep(is.numeric) %>%
+  cor() %>%
+  round(2)
+
+ggcorrplot(corr, type = "lower",
+           outline.col = "white")
+```
+
+
+
+# Animacja prezentuj¹c¹ zmianê wytwarzanej energii w czasie i w zaleznoœci od pozycji czujnika
+```{r timePlot, fig.show="animate", cache=TRUE}
+
+ds40varGroupedByMonth<-ds40var %>% 
+  mutate(monthYear=format(strptime(data, "%m/%d/%Y %H:%M"),"%Y-%m")) %>% 
+  group_by(monthYear,idsito) %>% summarize(sumKwh=sum(kwh))
+
+p<-ggplot(ds40varGroupedByMonth,aes(x=monthYear,y=sumKwh,frame=idsito,group=1))+geom_line()+ theme(axis.text.x = element_text(angle = 45, hjust = 1))
+gganimate(p)
+```
+Uwagê zwraca niemal zerowe wytworzenie energii w styczniu 2013 przez czujniki o identyfikatorach 0.025, 0.05, 0.075, 0.425 oraz w sierpniu 2013 przez czujnik o identyfikatorze 0.4. 
+
+# Regresor przewiduj¹cy wytwarzan¹ energiê
+```{r regressor, cache=TRUE, warning=FALSE}
+regressionData <- ds40var %>% dplyr::select(irradiamento, irr_pvgis_mod, humidity, altitude, dist, temperatura_ambiente, azimuth, cloudcover,kwh)
+
+set.seed(0)
+inTraining <- 
+  createDataPartition(
+    y = regressionData$kwh,
+    p = .70,
+    list = FALSE)
+
+trainingSet <- regressionData[ inTraining,]
+testingSet  <- regressionData[-inTraining,]
+
+
+fitRlm <- train(kwh ~ .,
+                  data = trainingSet,
+                  method = "rlm",
+                  trControl = trainControl(method="cv", number=5, preProcOptions = c("center", "scale")))
+
+
+predictedRlm<-predict(fitRlm,testingSet)
+
+rmseTrain<-min(fitRlm$results$RMSE)
+rmseTest<-rmse(predictedRlm,testingSet$kwh)
+
+```
+Z powodu czasu trenowania regresora i niskiej dostêpnej pamiêci komputera na którym wykonywane by³y obliczenia, ograniczono liczbê atrybutów jakie bior¹ udzia³ w uczeniu do 8 bior¹c pod uwagê te o najwiêkszej bezwglêdnej korelacji z atrybutem kwh. 
+Dane treningowe stanowi³y 70% zbioru, a dane testowe 30%. Podczas treningu zastosowano metodê walidacji krzy¿owej z 5 podzia³ami. Algorytmem regresji jaki u¿yto by³ Robust Linear Model. Najlepszy model uzyskano dla parametru intercept=FALSE i psi=psi.huber. Dodatkowo dla jak najlepszej wartoœci RMSE pomog³o wstêpne wycentrowanie i przeskalowanie danych. Dla modelu otrzymaliœmy oszacowane RMSE= `r rmseTrain`, tymczasem dla danych testowych RMSE by³o równe `r rmseTest`.
+
+# Analiza wa¿noœci atrybutów modelu regresji 
+```{r attrImportnace}
+varImp(fitRlm)
+```
+
+Najlepiej przewidzieæ energiê wytwarzan¹ przez panel pozwala natê¿enia promieniowania s³onecznego (irradiamento). Atrybut ten uzyska³ 100% w badaniu wa¿noœci atrybutów. Na kolejnych miejscach znalaz³a siê inna zmienna dotycz¹ca promieniowania s³onecznego (irr_pvgis_mod) i wilgotnoœæ powietrza (humidity).
